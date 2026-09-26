@@ -55,6 +55,18 @@ MAX_ARCHIVE_FILES = 256
 MAX_UNCOMPRESSED_SIZE = 256_000_000
 MAX_MEMBER_SIZE = 128_000_000
 
+# Upstream v0.4.0 (2026-09-26) stops this generator on purpose, and the build
+# stays red until a human reviews it. It moved the port onto the shared
+# mister-hybrid platform: the MiSTer.ini main= target is now the shared
+# linux/MiSTer_hybrid binary, which looks the loaded core up in
+# linux/hybrid.d/<core>.conf, and games/gmloader/MiSTer_Maldita is gone with it.
+# `linux` is one of the Downloader's invalid root folders, so no database may
+# install either file; v0.4.0 also drops games/Maldita Castilla/ entirely and
+# adds _Other/Maldita Castilla.mgl. The gates below refuse all of that instead
+# of publishing a launch route this database cannot complete. Review has to
+# either pin this entry to the last release it can install or redesign what it
+# installs around upstream's Scripts launcher; it must not be widened.
+
 # These are convenience menu/configuration tools. The supported launch route is
 # the dated RBF plus MiSTer.ini's main= wrapper, so neither belongs in the DB.
 OMITTED_MENU_SCRIPTS = (

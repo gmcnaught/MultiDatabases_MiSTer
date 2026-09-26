@@ -936,6 +936,65 @@ class MalditaCastillaGeneratorTests(unittest.TestCase):
                         self.release_members(self.member(path, b"#!/bin/bash\n"))
                     )
 
+    def hybrid_release_members(self):
+        """Upstream v0.4.0's layout: a shared linux/ launcher, no wrapper."""
+        generator = self.generator
+        moved = {
+            generator.ENGINE_LAUNCHER: "games/gmloader/launch.sh",
+            generator.MEMORY_MODULE_LOADER: (
+                "games/gmloader/platform/mem_wc_load.sh"
+            ),
+            "games/Maldita Castilla/mem_wc-5.15.1-MiSTer.ko": (
+                "games/gmloader/platform/mem_wc/mem_wc-5.15.1-MiSTer.ko"
+            ),
+        }
+        members = [
+            self.member(moved.get(member.path, member.path), member.data)
+            for member in self.release_members()
+            if member.path != generator.WRAPPER
+        ]
+        return members + [
+            self.member("linux/MiSTer_hybrid", self.ARM_BINARY),
+            self.member(
+                "linux/hybrid.d/Maldita Castilla.conf",
+                b"launcher=/media/fat/games/gmloader/launch.sh\n",
+            ),
+            self.member(
+                "_Other/Maldita Castilla.mgl",
+                b"<mistergamedescription>\n</mistergamedescription>\n",
+            ),
+        ]
+
+    def test_rejects_the_hybrid_platform_layout_until_it_is_reviewed(self) -> None:
+        # `linux` is an invalid root folder for every database, so the shared
+        # main= binary and its per-core registry cannot be installed at all.
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"outside its MiSTer folders: linux/MiSTer_hybrid, "
+            r"linux/hybrid\.d/Maldita Castilla\.conf",
+        ):
+            self.select(self.hybrid_release_members())
+
+        # Dropping those two files does not make the release installable
+        # either: the rest of the layout moved as well.
+        without_linux = [
+            member
+            for member in self.hybrid_release_members()
+            if not member.path.startswith("linux/")
+        ]
+        with self.assertRaisesRegex(RuntimeError, "unexpected files under _Other"):
+            self.select(without_linux)
+
+        without_mgl = [
+            member
+            for member in without_linux
+            if not member.path.endswith(".mgl")
+        ]
+        with self.assertRaisesRegex(
+            RuntimeError, "missing required files: games/Maldita Castilla/launch.sh"
+        ):
+            self.select(without_mgl)
+
     def test_rejects_user_owned_and_daemon_controlled_files(self) -> None:
         unsafe = (
             "games/Maldita Castilla/_handler.sh",
