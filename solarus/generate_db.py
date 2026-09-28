@@ -30,19 +30,25 @@ UPSTREAM = "gmcnaught/solarus-mister"
 ARCHIVE_ID = "release"
 ASSET_PATTERN = re.compile(r"solarus-mister-(v\d+\.\d+\.\d+)\.zip", re.IGNORECASE)
 CORE_PATTERN = re.compile(r"_Other/Solarus_\d{8}\.rbf")
+MODULE_PATTERN = re.compile(r"games/Solarus/platform/mem_wc/mem_wc-[^/]+\.ko")
 INSTALL_ROOTS = ("Scripts/", "_Other/", "docs/Solarus/", "games/Solarus/")
 # Release provenance for the ZIP itself, so it is dropped instead of landing on
 # the SD card root.
 IGNORED = ("BUILD-INFO.txt",)
-# Scripts/Solarus.sh only starts the daemon when none is running, and the daemon
-# registers itself into user-startup.sh, so an updated daemon takes over on the
-# next boot rather than on the next core load.
-DAEMON = "games/Solarus/solarus_daemon.sh"
+# Upstream v1.3.1 launches through the shared mister-hybrid platform instead of
+# the v1.2 auto-launch daemon: MiSTer.ini [Solarus] main= points at
+# games/Solarus/platform/MiSTer_hybrid, which starts games/Solarus/launch.sh from
+# the hybrid.d/ registry entry next to it. Scripts/Solarus.sh turns that main=
+# line on and removes the old daemon. (v1.3.0 shipped the hook under linux/, a
+# root folder the Downloader refuses for this database, so it was never
+# published here.)
 REQUIRED = (
-    DAEMON,
     "Scripts/Solarus.sh",
+    "games/Solarus/launch.sh",
     "games/Solarus/libs/libsolarus.so.1",
-    "games/Solarus/quest_manager.sh",
+    "games/Solarus/platform/MiSTer_hybrid",
+    "games/Solarus/platform/hybrid.d/Solarus.conf",
+    "games/Solarus/platform/launch_lib.sh",
     "games/Solarus/solarus-run",
 )
 
@@ -96,6 +102,7 @@ def main() -> int:
     members = read_archive_members(archive_data)
 
     version = ASSET_PATTERN.fullmatch(str(asset["name"])).group(1)
+    selected = selected_files(members)
     database = build_multi_selective_archive_database(
         folder=FOLDER,
         repository=args.repository,
@@ -105,9 +112,13 @@ def main() -> int:
                 archive_id=ARCHIVE_ID,
                 url=archive_url,
                 data=archive_data,
-                selected_files=selected_files(members),
+                selected_files=selected,
                 description=f"Installing Solarus MiSTer {version}",
-                reboot_paths=(DAEMON,),
+                # An already-loaded kernel module stays resident after its file
+                # changes, so a matching module update takes effect on reboot.
+                reboot_paths=tuple(
+                    path for path, _ in selected if MODULE_PATTERN.fullmatch(path)
+                ),
             ),
         ),
         filter_terms=(FOLDER, "other"),
