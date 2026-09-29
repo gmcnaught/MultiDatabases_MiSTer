@@ -41,7 +41,7 @@ ASSET_PATTERN = re.compile(
     re.IGNORECASE,
 )
 CORE_PATTERN = re.compile(r"_Other/MalditaCastilla_\d{8}\.rbf")
-MODULE_PATTERN = re.compile(r"games/Maldita Castilla/mem_wc-[^/]+\.ko")
+MODULE_PATTERN = re.compile(r"games/gmloader/platform/mem_wc/mem_wc-[^/]+\.ko")
 SHARED_OBJECT_PATTERN = re.compile(r".+\.so(?:\.\d+)*")
 GLIBC_PATTERN = re.compile(rb"GLIBC_(\d+)\.(\d+)")
 
@@ -55,8 +55,16 @@ MAX_ARCHIVE_FILES = 256
 MAX_UNCOMPRESSED_SIZE = 256_000_000
 MAX_MEMBER_SIZE = 128_000_000
 
+# Upstream v0.4.1 (2026-09-28) moved the port onto the shared mister-hybrid
+# platform. MiSTer.ini's main= target is games/gmloader/platform/MiSTer_hybrid,
+# which starts the engine launcher named in the hybrid.d/ registry entry next to
+# it; games/gmloader/MiSTer_Maldita and games/Maldita Castilla/ are gone. v0.4.0
+# shipped that binary and entry under linux/, a root folder the Downloader
+# refuses for every database but distribution_mister, so it was never
+# published here.
+
 # These are convenience menu/configuration tools. The supported launch route is
-# the dated RBF plus MiSTer.ini's main= wrapper, so neither belongs in the DB.
+# the dated RBF plus MiSTer.ini's main= hook, so neither belongs in the DB.
 OMITTED_MENU_SCRIPTS = (
     "Scripts/MalditaCastilla.sh",
     "Scripts/MalditaCastilla_CoresMenu.sh",
@@ -66,7 +74,6 @@ IGNORED = frozenset(
 )
 INSTALL_ROOTS = (
     "_Other/",
-    "games/Maldita Castilla/",
     "games/gmloader/",
 )
 PUBLISHED_SAVE_FILES = frozenset(
@@ -78,20 +85,27 @@ PUBLISHED_SAVE_FILES = frozenset(
 PUBLISHED_APK_FOLDER_FILES = frozenset({"games/gmloader/APKs/README.txt"})
 USER_OWNED = frozenset(
     {
-        # Master_Daemon treats this filename as an opt-in discovery hook. A
-        # stale copy launches a second engine against the same FPGA fabric.
-        "games/Maldita Castilla/_handler.sh",
-        # These opt-in/developer files alter launch behaviour and must remain
+        # The hook's registry entry names this as its opt-out switch: while the
+        # file exists, loading the core does not start the engine.
+        "games/gmloader/NOENGINE",
+        # This opt-in developer file alters launch behaviour and must remain
         # under the user's control.
-        "games/Maldita Castilla/takeover.env",
         "games/gmloader/bench.env",
     }
 )
 
-ENGINE_LAUNCHER = "games/Maldita Castilla/launch.sh"
-MEMORY_MODULE_LOADER = "games/Maldita Castilla/mem_wc_load.sh"
+ENGINE_LAUNCHER = "games/gmloader/launch.sh"
+PLATFORM_LAUNCHER = "games/gmloader/platform/launch_lib.sh"
+MEMORY_MODULE_LOADER = "games/gmloader/platform/mem_wc_load.sh"
 ENGINE = "games/gmloader/gmloader"
-WRAPPER = "games/gmloader/MiSTer_Maldita"
+WRAPPER = "games/gmloader/platform/MiSTer_hybrid"
+# The hook reads <its own folder>/hybrid.d/<CONF_STR core name>.conf.
+REGISTRY = "games/gmloader/platform/hybrid.d/Maldita Castilla.conf"
+# Upstream's Cores-browser entry; it only loads the dated core by prefix.
+CORE_MGL = "_Other/Maldita Castilla.mgl"
+# Linked into every platform v0.4+ hook build; a stock Main_MiSTer or a v0.3
+# hook (which reads /media/fat/linux/hybrid.d) lacks it.
+WRAPPER_MARKER = b"MiSTer_hybrid registry: <binary dir>/hybrid.d"
 CONFIG = "games/gmloader/gmloader.json"
 APK = "games/gmloader/mygame.apk"
 GAME_DATA = "games/gmloader/saves/game.droid"
@@ -101,9 +115,11 @@ CREDITS = "games/gmloader/maldita-castilla-readme.txt"
 REQUIRED = frozenset(
     {
         ENGINE_LAUNCHER,
+        PLATFORM_LAUNCHER,
         MEMORY_MODULE_LOADER,
         ENGINE,
         WRAPPER,
+        REGISTRY,
         CONFIG,
         APK,
         GAME_DATA,
@@ -288,6 +304,24 @@ def _validate_script(
         )
 
 
+def _validate_library(
+    member: ArchiveMember, *, markers: Sequence[str]
+) -> None:
+    """A shell library the launcher sources: no shebang, same path markers."""
+    try:
+        text = member.data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(
+            f"Maldita Castilla script is not UTF-8: {member.path}"
+        ) from exc
+    missing = [marker for marker in markers if marker not in text]
+    if missing:
+        raise RuntimeError(
+            f"Maldita Castilla script {member.path} is missing required paths: "
+            + ", ".join(missing)
+        )
+
+
 def _validate_arm_elf(path: str, data: bytes) -> None:
     if len(data) < 20 or not data.startswith(b"\x7fELF"):
         raise RuntimeError(f"{path} is not an ELF binary")
@@ -307,6 +341,32 @@ def _validate_glibc_ceiling(path: str, data: bytes) -> None:
         raise RuntimeError(
             f"{path} requires GLIBC_{newest[0]}.{newest[1]}, above MiSTer's "
             "GLIBC_2.29 compatibility ceiling"
+        )
+
+
+def _validate_registry(member: ArchiveMember) -> None:
+    """The hook's entry must start the bundled launcher and nothing else."""
+    try:
+        text = member.data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"{REGISTRY} is not UTF-8") from exc
+    launchers = [
+        line.split("=", 1)[1].strip()
+        for line in text.splitlines()
+        if line.strip().startswith("launcher=")
+    ]
+    if launchers != [f"/media/fat/{ENGINE_LAUNCHER}"]:
+        raise RuntimeError(
+            f"{REGISTRY} does not start /media/fat/{ENGINE_LAUNCHER}: "
+            + (", ".join(launchers) or "no launcher=")
+        )
+
+
+def _validate_mgl(member: ArchiveMember) -> None:
+    text = member.data.decode("utf-8", "replace")
+    if "<rbf>_Other/MalditaCastilla</rbf>" not in text or "<file" in text:
+        raise RuntimeError(
+            f"{CORE_MGL} must only load the _Other/MalditaCastilla_* core"
         )
 
 
@@ -425,7 +485,7 @@ def selected_files(
     other_core_files = sorted(
         path
         for path in installable
-        if path.startswith("_Other/") and path not in cores
+        if path.startswith("_Other/") and path not in cores and path != CORE_MGL
     )
     if other_core_files:
         raise RuntimeError(
@@ -461,20 +521,25 @@ def selected_files(
 
     _validate_script(
         installable[ENGINE_LAUNCHER],
-        markers=("/media/fat/games/gmloader", "./gmloader -c gmloader.json"),
+        markers=(
+            "/media/fat/games/gmloader",
+            '"./gmloader" "-c" "gmloader.json"',
+            "platform/launch_lib.sh",
+        ),
     )
-    _validate_script(
+    _validate_library(installable[PLATFORM_LAUNCHER], markers=("mh_main()",))
+    _validate_library(
         installable[MEMORY_MODULE_LOADER], markers=("mem_wc-", "uname -r")
     )
 
     for path in (ENGINE, WRAPPER):
         validate_arm_binary(path, installable[path].data)
         _validate_glibc_ceiling(path, installable[path].data)
-    wrapper_hook = f"/media/fat/{ENGINE_LAUNCHER}".encode()
-    if wrapper_hook not in installable[WRAPPER].data:
-        raise RuntimeError(
-            f"{WRAPPER} is not the Maldita Castilla main= wrapper build"
-        )
+    if WRAPPER_MARKER not in installable[WRAPPER].data:
+        raise RuntimeError(f"{WRAPPER} is not the mister-hybrid main= hook build")
+    _validate_registry(installable[REGISTRY])
+    if CORE_MGL in installable:
+        _validate_mgl(installable[CORE_MGL])
 
     for path, member in installable.items():
         if SHARED_OBJECT_PATTERN.fullmatch(path) or path in modules:

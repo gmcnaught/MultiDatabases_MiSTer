@@ -719,13 +719,18 @@ class SolarusGeneratorTests(unittest.TestCase):
             self.member(path)
             for path in (
                 "Scripts/Solarus.sh",
+                "Scripts/Solarus_CoresMenu.sh",
+                "_Other/Solarus.mgl",
                 "_Other/Solarus_20260723.rbf",
                 "docs/Solarus/README.md",
+                "games/Solarus/launch.sh",
                 "games/Solarus/libs/libsolarus.so.1",
-                "games/Solarus/quest_manager.sh",
+                "games/Solarus/platform/MiSTer_hybrid",
+                "games/Solarus/platform/hybrid.d/Solarus.conf",
+                "games/Solarus/platform/launch_lib.sh",
+                "games/Solarus/platform/mem_wc/mem_wc-6.18.38-MiSTer.ko",
                 "games/Solarus/quests/PUT-QUESTS-HERE.txt",
                 "games/Solarus/solarus-run",
-                "games/Solarus/solarus_daemon.sh",
                 *extra,
             )
         ]
@@ -780,6 +785,43 @@ class SolarusGeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "games/Solarus/solarus-run"):
             self.generator.selected_files(members)
 
+    def test_rejects_a_release_missing_the_main_hook_or_its_entry(self) -> None:
+        for path in (
+            "games/Solarus/platform/MiSTer_hybrid",
+            "games/Solarus/platform/hybrid.d/Solarus.conf",
+        ):
+            with self.subTest(path=path):
+                members = [
+                    member
+                    for member in self.release_members()
+                    if member.path != path
+                ]
+                with self.assertRaisesRegex(RuntimeError, "missing required"):
+                    self.generator.selected_files(members)
+
+    def test_rejects_the_linux_layout_no_database_can_install(self) -> None:
+        # Upstream v1.3.0: the main= hook and its registry under linux/, which
+        # the Downloader refuses as a root folder for every database.
+        members = [
+            member
+            for member in self.release_members()
+            if "/platform/MiSTer_hybrid" not in member.path
+            and "/hybrid.d/" not in member.path
+        ]
+        members += [
+            self.member("linux/MiSTer_hybrid"),
+            self.member("linux/hybrid.d/Solarus.conf"),
+        ]
+        with self.assertRaisesRegex(RuntimeError, "outside its MiSTer folders"):
+            self.generator.selected_files(members)
+
+    def test_module_pattern_marks_only_the_platform_kernel_modules(self) -> None:
+        pattern = self.generator.MODULE_PATTERN
+        self.assertIsNotNone(
+            pattern.fullmatch("games/Solarus/platform/mem_wc/mem_wc-5.15.1-MiSTer.ko")
+        )
+        self.assertIsNone(pattern.fullmatch("games/Solarus/libs/libsolarus.so.1"))
+
     def test_asset_pattern_only_accepts_versioned_release_zips(self) -> None:
         pattern = self.generator.ASSET_PATTERN
         self.assertEqual(
@@ -819,32 +861,48 @@ class MalditaCastillaGeneratorTests(unittest.TestCase):
         contents = {
             "README.md": b"release instructions",
             "_Other/MalditaCastilla_20260808.rbf": bytes(1_000_000),
+            "_Other/Maldita Castilla.mgl": (
+                b"<mistergamedescription>\n"
+                b"\t<rbf>_Other/MalditaCastilla</rbf>\n"
+                b"</mistergamedescription>\n"
+            ),
             "Scripts/MalditaCastilla.sh": (
                 b"#!/bin/bash\n"
-                b'CORENAME="Maldita Castilla"\n'
-                b'HANDLER="/media/fat/games/$CORENAME/launch.sh"\n'
+                b'GAMEDIR="/media/fat/games/gmloader"\n'
+                b'HOOK="/media/fat/games/gmloader/platform/MiSTer_hybrid"\n'
                 b'RBF_GLOB="/media/fat/_Other/MalditaCastilla_*.rbf"\n'
             ),
             "Scripts/MalditaCastilla_CoresMenu.sh": (
                 b"#!/bin/bash\n"
-                b'WRAPPER_DEFAULT="/media/fat/games/gmloader/MiSTer_Maldita"\n'
-                b'INI_DEFAULT="/media/fat/MiSTer.ini"\n'
+                b'WRAPPER="${MH_HOOK:-/media/fat/games/gmloader/platform/'
+                b'MiSTer_hybrid}"\n'
+                b'MH_INI_FILE="${MH_INI:-/media/fat/MiSTer.ini}"\n'
             ),
             generator.ENGINE_LAUNCHER: (
                 b"#!/bin/bash\n"
-                b'GAMEDIR="/media/fat/games/gmloader"\n'
-                b"exec ./gmloader -c gmloader.json\n"
+                b'MH_GAMEDIR="${MH_ROOT:-}/media/fat/games/gmloader"\n'
+                b'MH_ENGINE_CMD=("nice" "-n" "-10" "./gmloader" "-c" '
+                b'"gmloader.json")\n'
+                b'. "$MH_GAMEDIR/platform/launch_lib.sh"\n'
+                b"mh_main\n"
+            ),
+            generator.PLATFORM_LAUNCHER: (
+                b"# shellcheck shell=bash\nmh_main() {\n    :\n}\n"
             ),
             generator.MEMORY_MODULE_LOADER: (
-                b"#!/bin/bash\n"
+                b"# shellcheck shell=sh\n"
                 b'KERNEL="$(uname -r)"\n'
                 b'MODULE="mem_wc-$KERNEL.ko"\n'
             ),
-            "games/Maldita Castilla/mem_wc-5.15.1-MiSTer.ko": self.ARM_ELF,
+            "games/gmloader/platform/mem_wc/mem_wc-5.15.1-MiSTer.ko": self.ARM_ELF,
+            "games/gmloader/platform/ini_main.sh": b"# shellcheck shell=sh\n",
             generator.ENGINE: self.ARM_BINARY,
-            generator.WRAPPER: (
-                self.ARM_BINARY
-                + f"/media/fat/{generator.ENGINE_LAUNCHER}".encode()
+            generator.WRAPPER: self.ARM_BINARY + generator.WRAPPER_MARKER,
+            generator.REGISTRY: (
+                b"launcher=/media/fat/games/gmloader/launch.sh\n"
+                b"log=/media/fat/logs/MalditaCastilla/launch.log\n"
+                b"noengine=/media/fat/games/gmloader/NOENGINE\n"
+                b"profile=gm-fabric\n"
             ),
             generator.CONFIG: json.dumps(
                 {
@@ -906,7 +964,7 @@ class MalditaCastillaGeneratorTests(unittest.TestCase):
             member.path for member in members if member.path not in omitted
         )
         self.assertEqual(expected, [path for path, _ in selected])
-        self.assertEqual(21, len(selected))
+        self.assertEqual(25, len(selected))
         self.assertFalse(any(path.startswith("Scripts/") for path, _ in selected))
 
     def test_does_not_require_the_upstream_menu_scripts(self) -> None:
@@ -938,8 +996,7 @@ class MalditaCastillaGeneratorTests(unittest.TestCase):
 
     def test_rejects_user_owned_and_daemon_controlled_files(self) -> None:
         unsafe = (
-            "games/Maldita Castilla/_handler.sh",
-            "games/Maldita Castilla/takeover.env",
+            "games/gmloader/NOENGINE",
             "games/gmloader/bench.env",
             "games/gmloader/saves/slot1.sav",
             "games/gmloader/APKs/MyGame.apk",
@@ -996,7 +1053,54 @@ class MalditaCastillaGeneratorTests(unittest.TestCase):
         members = self.replace(
             self.release_members(), self.generator.WRAPPER, self.ARM_BINARY
         )
-        with self.assertRaisesRegex(RuntimeError, "main= wrapper"):
+        with self.assertRaisesRegex(RuntimeError, "main= hook build"):
+            self.select(members)
+
+    def test_rejects_a_registry_entry_for_another_launcher(self) -> None:
+        members = self.replace(
+            self.release_members(),
+            self.generator.REGISTRY,
+            b"launcher=/media/fat/games/gmloader/other.sh\n",
+        )
+        with self.assertRaisesRegex(RuntimeError, "does not start"):
+            self.select(members)
+
+    def test_rejects_an_mgl_that_loads_anything_but_the_core(self) -> None:
+        members = self.replace(
+            self.release_members(),
+            self.generator.CORE_MGL,
+            b"<mistergamedescription><rbf>_Other/MalditaCastilla</rbf>"
+            b'<file delay="1" type="f" index="0" path="../x"/>'
+            b"</mistergamedescription>",
+        )
+        with self.assertRaisesRegex(RuntimeError, "must only load"):
+            self.select(members)
+
+    def test_rejects_the_linux_layout_no_database_can_install(self) -> None:
+        # Upstream v0.4.0: the hook and its registry under linux/, which the
+        # Downloader refuses as a root folder for every database.
+        generator = self.generator
+        moved = {
+            generator.WRAPPER: "linux/MiSTer_hybrid",
+            generator.REGISTRY: "linux/hybrid.d/Maldita Castilla.conf",
+        }
+        members = [
+            self.member(moved.get(member.path, member.path), member.data)
+            for member in self.release_members()
+        ]
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"outside its MiSTer folders: linux/MiSTer_hybrid, "
+            r"linux/hybrid\.d/Maldita Castilla\.conf",
+        ):
+            self.select(members)
+
+    def test_rejects_the_pre_platform_layout(self) -> None:
+        # Upstream v0.3.x: engine launcher and modules in games/Maldita Castilla/.
+        members = self.release_members(
+            self.member("games/Maldita Castilla/launch.sh", b"#!/bin/bash\n")
+        )
+        with self.assertRaisesRegex(RuntimeError, "outside its MiSTer folders"):
             self.select(members)
 
     def test_rejects_changed_game_bytes_until_they_are_reviewed(self) -> None:

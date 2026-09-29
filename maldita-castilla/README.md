@@ -10,8 +10,10 @@
 Maldita Castilla MiSTer is a hybrid FPGA/ARM port of Locomalito's GameMaker
 game. The ARM-side `gmloader` engine runs the original game while a custom FPGA
 core accelerates rasterisation. The database follows the latest stable,
-versioned upstream release and installs its dated core, ARM engine and wrapper,
-runtime libraries, optional write-combining kernel module, and included game.
+versioned upstream release and installs its dated core and Cores-menu MGL, the
+ARM engine and its launcher, the mister-hybrid `main=` hook with this core's
+registry entry, runtime libraries, the optional write-combining kernel module,
+and the included game. Everything lands under `_Other/` and `games/gmloader/`.
 
 The original `game.droid` data is byte-identical to Locomalito's original
 `data.win`. Locomalito publishes the original game—not the commercial EX
@@ -31,14 +33,23 @@ Add this required section to `/media/fat/MiSTer.ini`:
 
 ```ini
 [Maldita Castilla]
-main=games/gmloader/MiSTer_Maldita
+main=/media/fat/games/gmloader/platform/MiSTer_hybrid
 ```
 
 The RBF launch entry point is installed as
-`/media/fat/_Other/MalditaCastilla_YYYYMMDD.rbf`. Select the newest Maldita
-Castilla RBF from MiSTer's **_Other** menu. It loads the FPGA core and uses the
-`main=` wrapper to start the ARM engine. Do not point `main=` at
-`games/Maldita Castilla/launch.sh` or another shell script.
+`/media/fat/_Other/MalditaCastilla_YYYYMMDD.rbf`, with
+`/media/fat/_Other/Maldita Castilla.mgl` pointing at it. Select either from
+MiSTer's **_Other** menu. The core loads, and the `main=` hook starts the ARM
+engine through `games/gmloader/launch.sh`, which its entry in
+`games/gmloader/platform/hybrid.d/` names. Do not point `main=` at
+`launch.sh` or another shell script. Creating an empty
+`/media/fat/games/gmloader/NOENGINE` file stops the hook from starting the
+engine without editing `MiSTer.ini`.
+
+**Upgrading from the v0.3.x database:** replace the old
+`main=games/gmloader/MiSTer_Maldita` line with the one above. The update removes
+`games/gmloader/MiSTer_Maldita` and the `games/Maldita Castilla/` launcher and
+module files. Until you change the line, loading the core only loads the core.
 
 If the Downloader requests a reboot after installing or updating the `mem_wc`
 kernel module, reboot before the next launch so an already-loaded copy cannot
